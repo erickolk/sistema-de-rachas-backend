@@ -1,6 +1,6 @@
 import fs from 'fs';
 import https from 'https';
-import FastifyServer from './infra/http/fastify/server';
+import http from 'http';
 
 // Caminho para os certificados SSL
 const options = {
@@ -13,24 +13,55 @@ const options = {
   key: fs.readFileSync('/etc/ssl/private/selfsigned.key'),
 };
 
-// Porta HTTPS
+// Porta para o servidor Fastify normal (HTTP)
+const HTTP_PORT = 3002;
+// Porta para o servidor HTTPS
 const HTTPS_PORT = 3003;
 
-// Inicie o servidor Fastify normalmente (para HTTP)
-FastifyServer.start();
+// Inicia o servidor Fastify normal
+import('./main');
 
-// Obtenha a instância do servidor Fastify
-const fastifyInstance = (FastifyServer as any).server;
+// Cria um servidor HTTPS que encaminha requisições para o servidor Fastify
+const httpsServer = https.createServer(options, (req, res) => {
+  console.log(`Recebendo requisição HTTPS: ${req.method} ${req.url}`);
+  
+  const proxyReq = http.request({
+    host: 'localhost',
+    port: HTTP_PORT,
+    path: req.url,
+    method: req.method,
+    headers: req.headers
+  }, (proxyRes) => {
+    // Adiciona cabeçalhos CORS
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    
+    res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+    proxyRes.pipe(res);
+  });
 
-// Configure o servidor para também escutar HTTPS
-fastifyInstance.listen({
-  port: HTTPS_PORT,
-  host: '0.0.0.0',
-  https: options
-}, (err: Error | null) => {
-  if (err) {
-    console.error('Erro ao iniciar servidor HTTPS:', err);
-    process.exit(1);
+  // Se for uma requisição OPTIONS (preflight CORS), responda imediatamente
+  if (req.method === 'OPTIONS') {
+    res.writeHead(200, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Max-Age': '86400'
+    });
+    res.end();
+    return;
   }
-  console.log(`Servidor HTTPS iniciado com sucesso na porta ${HTTPS_PORT}!`);
+
+  req.pipe(proxyReq);
+
+  proxyReq.on('error', (e) => {
+    console.error('Erro ao encaminhar requisição:', e);
+    res.statusCode = 500;
+    res.end('Erro interno do servidor');
+  });
+});
+
+httpsServer.listen(HTTPS_PORT, '0.0.0.0', () => {
+  console.log(`Servidor HTTPS rodando na porta ${HTTPS_PORT}!`);
 }); 
